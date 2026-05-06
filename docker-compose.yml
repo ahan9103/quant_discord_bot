@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: quant_postgres
+    environment:
+      POSTGRES_USER: quant_user
+      POSTGRES_PASSWORD: your_password
+      POSTGRES_DB: quant_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  bot:
+    build: .
+    container_name: quant_discord_bot
+    environment:
+      - DISCORD_TOKEN=your_discord_token
+      - GEMINI_API_KEY=your_gemini_key
+      - SHIOAJI_API_KEY=your_shioaji_key
+      - SHIOAJI_SECRET_KEY=your_shioaji_secret
+      - DATABASE_URL=postgresql://quant_user:your_password@db:5432/quant_db
+    depends_on:
+      - db
+    restart: always
+
+  discord-bot:
+    build: .
+    container_name: quant_bot
+    restart: always
+    # 讓容器讀取同目錄下的 .env 檔案
+    env_file:
+      - .env
+    # 確保容器可以解析 host.docker.internal (特別是在 Linux 環境下需要這行)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
