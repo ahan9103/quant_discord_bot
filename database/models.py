@@ -1,7 +1,7 @@
 # database/models.py
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import String, Float, DateTime, ForeignKey, BigInteger, Boolean
-from sqlalchemy.dialects.postgresql import JSONB  # [面試亮點] 針對 PostgreSQL 的 JSONB 型態
+from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
 from typing import List, Optional
 

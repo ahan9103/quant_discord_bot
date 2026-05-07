@@ -1,16 +1,21 @@
 # bot/cogs/watchlist.py
 import discord
-from discord.ext import commands
+from discord.ext import commands ,tasks
 from discord import app_commands
 import yfinance as yf
 import asyncio
+import logging
 from sqlalchemy import select, update, delete
 from typing import Optional
+from datetime import datetime, time, timezone, timedelta
+from services.ai_analyzer import ai_analyzer
 
 # 引入資料庫模型與連線 Session
 from database.session import AsyncSessionLocal
 from database.models import Ticker, Watchlist, User
+from services.news_service import NewsService
 
+logger = logging.getLogger("watchlist")
 
 # 這是一個一般的同步函式，用來呼叫 yfinance
 def fetch_stock_info_sync(symbol: str) -> dict:
@@ -30,47 +35,93 @@ def fetch_stock_info_sync(symbol: str) -> dict:
         print(f"yfinance 查詢錯誤: {e}")
         return None
 
+def fetch_current_prices(symbols: list[str]) -> dict:
+    if not symbols:
+        return {}
+    try:
+        # 使用 yf.download 批次抓取，效能遠高於單檔抓取
+        data = yf.download(symbols, period="1d", progress=False)
+        # 如果只有一檔股票，yfinance 回傳的 DataFrame 結構會不一樣，需要做處理
+        if len(symbols) == 1:
+            price = data['Close'].iloc[-1].item()
+            return {symbols[0]: price}
+        else:
+            # 多檔股票的處理
+            prices = data['Close'].iloc[-1].to_dict()
+            return prices
+    except Exception as e:
+        print(f"批次報價抓取失敗: {e}")
+        return {}
+
+
+def fetch_single_stock_info(symbol: str) -> dict:
+    try:
+        info = yf.Ticker(symbol).info
+        name = info.get('shortName') or info.get('longName', symbol)
+        market = 'TW' if symbol.endswith(('.TW', '.TWO')) else 'US'
+        return {"name": name, "market": market}
+    except Exception:
+        return None
+
 
 class WatchlistCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # 設定台北時區
+        self.tz = timezone(timedelta(hours=8))
+        # 啟動背景排程
+        self.scheduled_checkups.start()
 
-    # =============== Autocomplete 邏輯 ===============
-    async def symbol_autocomplete(self, interaction: discord.Interaction, current: str) -> list[
+    def cog_unload(self):
+        self.scheduled_checkups.cancel()
+    # ==========================================
+    # 隱藏的輔助機制
+    # ==========================================
+    async def _ensure_user(self, session, discord_id: int):
+        """靜默註冊機制：確保使用者存在，否則自動建立"""
+        user = await session.get(User, discord_id)
+        if not user:
+            new_user = User(discord_id=discord_id)
+            session.add(new_user)
+            await session.commit()
+
+    # ==========================================
+    # Autocomplete 邏輯 (UX 極致優化)
+    # ==========================================
+    async def all_symbol_autocomplete(self, interaction: discord.Interaction, current: str) -> list[
         app_commands.Choice[str]]:
-        """
-        當使用者在 Discord 輸入文字時，這個函式會被即時觸發
-        """
+        """給 /add 用的：搜尋資料庫內所有標的"""
         if not current:
-            return []  # 如果沒打字就不提供建議，或可回傳熱門標的
-
+            return []
         async with AsyncSessionLocal() as session:
-            # 使用 ILIKE 進行不區分大小寫的模糊比對 (代號或名稱)
-            # Discord API 規定回傳的建議清單最多只能有 25 個
             stmt = select(Ticker).where(
                 (Ticker.symbol.ilike(f"%{current}%")) |
                 (Ticker.name.ilike(f"%{current}%"))
             ).limit(25)
-
             result = await session.execute(stmt)
-            tickers = result.scalars().all()
+            return [app_commands.Choice(name=f"{t.symbol} - {t.name}", value=t.symbol) for t in result.scalars().all()]
 
-            # 組裝回傳給 Discord 的選項
-            choices = [
-                app_commands.Choice(
-                    name=f"{t.symbol} - {t.name}",  # 顯示給使用者看的文字
-                    value=t.symbol  # 真正傳給背景程式的值
-                )
-                for t in tickers
-            ]
-            return choices
+    async def tracked_symbol_autocomplete(self, interaction: discord.Interaction, current: str) -> list[
+        app_commands.Choice[str]]:
+        """給 /update, /remove 用的：只搜尋使用者『正在追蹤』的標的"""
+        async with AsyncSessionLocal() as session:
+            stmt = select(Watchlist.symbol).where(Watchlist.user_id == interaction.user.id)
+            result = await session.execute(stmt)
+            tracked_symbols = [row[0] for row in result.all()]
 
+            # 過濾符合輸入字串的標的
+            filtered = [sym for sym in tracked_symbols if current.upper() in sym.upper()][:25]
+            return [app_commands.Choice(name=sym, value=sym) for sym in filtered]
+
+    # ==========================================
+    # C: 新增追蹤 (/add)
+    # ==========================================
     @app_commands.command(name="add_stock", description="將股票加入個人追蹤清單")
     @app_commands.describe(
         symbol="輸入代號 (台股請輸入數字如 2330，美股如 AAPL)",
         cost_price="[選填] 輸入您的持有成本價，方便未來計算損益"
     )
-    @app_commands.autocomplete(symbol=symbol_autocomplete)
+    @app_commands.autocomplete(symbol=all_symbol_autocomplete)
     async def add_stock(self, interaction: discord.Interaction, symbol: str, cost_price: Optional[float] = None):
         # 1. 延遲回覆 (Defer) 爭取運算時間
         # 這會讓 Discord 畫面上顯示「機器人正在思考中...」，避免 3 秒 Timeout
@@ -134,114 +185,6 @@ class WatchlistCog(commands.Cog):
 
             await interaction.followup.send(msg)
 
-
-def fetch_current_prices(symbols: list[str]) -> dict:
-    if not symbols:
-        return {}
-    try:
-        # 使用 yf.download 批次抓取，效能遠高於單檔抓取
-        data = yf.download(symbols, period="1d", progress=False)
-        # 如果只有一檔股票，yfinance 回傳的 DataFrame 結構會不一樣，需要做處理
-        if len(symbols) == 1:
-            price = data['Close'].iloc[-1].item()
-            return {symbols[0]: price}
-        else:
-            # 多檔股票的處理
-            prices = data['Close'].iloc[-1].to_dict()
-            return prices
-    except Exception as e:
-        print(f"批次報價抓取失敗: {e}")
-        return {}
-
-
-def fetch_single_stock_info(symbol: str) -> dict:
-    try:
-        info = yf.Ticker(symbol).info
-        name = info.get('shortName') or info.get('longName', symbol)
-        market = 'TW' if symbol.endswith(('.TW', '.TWO')) else 'US'
-        return {"name": name, "market": market}
-    except Exception:
-        return None
-
-
-class WatchlistCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-
-    # ==========================================
-    # 隱藏的輔助機制
-    # ==========================================
-    async def _ensure_user(self, session, discord_id: int):
-        """靜默註冊機制：確保使用者存在，否則自動建立"""
-        user = await session.get(User, discord_id)
-        if not user:
-            new_user = User(discord_id=discord_id)
-            session.add(new_user)
-            await session.commit()
-
-    # ==========================================
-    # Autocomplete 邏輯 (UX 極致優化)
-    # ==========================================
-    async def all_symbol_autocomplete(self, interaction: discord.Interaction, current: str) -> list[
-        app_commands.Choice[str]]:
-        """給 /add 用的：搜尋資料庫內所有標的"""
-        if not current:
-            return []
-        async with AsyncSessionLocal() as session:
-            stmt = select(Ticker).where(
-                (Ticker.symbol.ilike(f"%{current}%")) |
-                (Ticker.name.ilike(f"%{current}%"))
-            ).limit(25)
-            result = await session.execute(stmt)
-            return [app_commands.Choice(name=f"{t.symbol} - {t.name}", value=t.symbol) for t in result.scalars().all()]
-
-    async def tracked_symbol_autocomplete(self, interaction: discord.Interaction, current: str) -> list[
-        app_commands.Choice[str]]:
-        """給 /update, /remove 用的：只搜尋使用者『正在追蹤』的標的"""
-        async with AsyncSessionLocal() as session:
-            stmt = select(Watchlist.symbol).where(Watchlist.user_id == interaction.user.id)
-            result = await session.execute(stmt)
-            tracked_symbols = [row[0] for row in result.all()]
-
-            # 過濾符合輸入字串的標的
-            filtered = [sym for sym in tracked_symbols if current.upper() in sym.upper()][:25]
-            return [app_commands.Choice(name=sym, value=sym) for sym in filtered]
-
-    # ==========================================
-    # C: 新增追蹤 (/add)
-    # ==========================================
-    @app_commands.command(name="add", description="[C] 將股票加入追蹤清單")
-    @app_commands.autocomplete(symbol=all_symbol_autocomplete)
-    async def add_stock(self, interaction: discord.Interaction, symbol: str, cost_price: Optional[float] = None,
-                        target_price: Optional[float] = None, stop_loss: Optional[float] = None):
-        await interaction.response.defer()
-        symbol = symbol.upper().strip()
-        query_symbol = f"{symbol}.TW" if symbol.isdigit() and len(symbol) == 4 else symbol
-
-        async with AsyncSessionLocal() as session:
-            await self._ensure_user(session, interaction.user.id)
-
-            # 確保 Ticker 存在
-            ticker = await session.get(Ticker, query_symbol)
-            if not ticker:
-                info = await asyncio.to_thread(fetch_single_stock_info, query_symbol)
-                if not info:
-                    return await interaction.followup.send(f"❌ 找不到股票代號 **{symbol}**。")
-                ticker = Ticker(symbol=query_symbol, name=info['name'], market=info['market'])
-                session.add(ticker)
-
-            # 檢查是否已追蹤
-            exist = await session.execute(
-                select(Watchlist).where(Watchlist.user_id == interaction.user.id, Watchlist.symbol == query_symbol))
-            if exist.scalar_one_or_none():
-                return await interaction.followup.send(f"⚠️ 您已經在追蹤 **{query_symbol}**，若要修改請使用 `/update`。")
-
-            new_watch = Watchlist(user_id=interaction.user.id, symbol=query_symbol, cost_price=cost_price,
-                                  target_price=target_price, stop_loss=stop_loss)
-            session.add(new_watch)
-            await session.commit()
-
-            await interaction.followup.send(f"✅ 成功新增 **{ticker.name} ({query_symbol})** 到追蹤清單！")
 
     # ==========================================
     # R: 讀取清單與損益 (/list)
@@ -350,6 +293,124 @@ class WatchlistCog(commands.Cog):
                 await session.commit()
                 await interaction.followup.send(f"🗑️ 已將 **{symbol}** 移出追蹤清單。")
 
+    @app_commands.command(name="morning_news", description="產生自選股專屬的新聞情緒分析早報")
+    async def morning_news(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        try:
+            # 1. 從資料庫撈取使用者的自選股清單
+            user_discord_id = interaction.user.id
+
+            # 1. 從資料庫撈取該使用者的自選股清單
+            async with AsyncSessionLocal() as session:
+                # 建立查詢語句：SELECT stock_symbol FROM watchlist WHERE user_id = ?
+                stmt = select(Watchlist.symbol).where(Watchlist.user_id == user_discord_id)
+                result = await session.execute(stmt)
+
+                # scalars().all() 會把 [('2330',), ('2317',)] 這種 Tuple 列表
+                # 攤平成乾淨的陣列 ['2330', '2317']
+                my_watchlist = result.scalars().all()
+
+            # 💡 [防呆機制] 如果使用者還沒有加入任何自選股
+            if not my_watchlist:
+                return await interaction.followup.send(
+                    "📝 您的自選股清單目前是空的喔！請先使用新增指令（例如 `/add_stock`）加入追蹤標的。"
+                )
+
+            msg = await interaction.followup.send(f"🔍 正在為您掃描自選股 `{my_watchlist}` 的最新情報，請稍候...")
+
+            # 2. 爬取新聞
+            raw_news = await NewsService.fetch_watchlist_news(my_watchlist)
+            logger.info(f"🔍 [Debug] 爬蟲結果長度: {len(raw_news)}")
+
+            if "發生網路錯誤" in raw_news:
+                return await msg.edit(content="❌ 網路異常，無法獲取新聞。")
+
+            # 3. AI 分析
+            ai_report = await ai_analyzer.analyze_news_sentiment(raw_news)
+            logger.info(f"🧠 [Debug] AI 回傳長度: {len(ai_report)}")
+
+            # 4. 💡 [關鍵修改] 直接「編輯」剛剛那條等待訊息，把它變成最終報告！
+            if len(ai_report) <= 2000:
+                await msg.edit(content=ai_report)
+            else:
+                # 如果字數超過 2000，先編輯第一則，剩下的用回覆補上
+                await msg.edit(content=ai_report[:1990])
+                for i in range(1990, len(ai_report), 1990):
+                    await interaction.channel.send(ai_report[i:i + 1990])
+
+        except Exception as e:
+            logger.error(f"早報生成失敗: {e}")
+            # 防呆：確保出錯時 Discord 也能看到提示
+            await interaction.followup.send(f"❌ 系統發生錯誤: {e}")
+
+
+
+    # ==========================================
+    # 2. 自動排程區 (持股健檢推播)
+    # ==========================================
+    # 設定時間：08:30 (盤前), 10:00, 11:30, 13:00 (盤中三次)
+    @tasks.loop(time=[
+        time(hour=8, minute=30, tzinfo=timezone(timedelta(hours=8))),
+        time(hour=10, minute=0, tzinfo=timezone(timedelta(hours=8))),
+        time(hour=11, minute=30, tzinfo=timezone(timedelta(hours=8))),
+        time(hour=13, minute=0, tzinfo=timezone(timedelta(hours=8)))
+    ])
+    async def scheduled_checkups(self):
+        now = datetime.now(self.tz)
+        # 週末不發送 (0=週一, 4=週五, 5=週六, 6=週日)
+        if now.weekday() >= 5:
+            return
+
+        logger.info(f"⏰ 觸發定時持股健檢！目前時間：{now.strftime('%H:%M')}")
+
+        try:
+            # 1. 取得所有有註冊的使用者
+            async with AsyncSessionLocal() as session:
+                users_result = await session.execute(select(User.discord_id))
+                user_ids = users_result.scalars().all()
+
+            # 2. 迴圈處理每位使用者的專屬報告
+            for uid in user_ids:
+                async with AsyncSessionLocal() as session:
+                    stmt = select(Watchlist.symbol).where(Watchlist.user_id == uid)
+                    result = await session.execute(stmt)
+                    my_watchlist = result.scalars().all()
+
+                # 如果該使用者沒有自選股，就跳過不發送
+                if not my_watchlist:
+                    continue
+
+                    # 3. 抓取專屬新聞
+                raw_news = await NewsService.fetch_watchlist_news(my_watchlist)
+
+                # 4. 分析並組合推播訊息
+                if "發生錯誤" in raw_news or "無重大新聞" in raw_news:
+                    report_text = f"**[系統推播] {now.strftime('%H:%M')} 持股動態：**\n{raw_news}"
+                else:
+                    ai_report = await ai_analyzer.analyze_news_sentiment(raw_news)
+                    report_text = f"**[持股健檢] {now.strftime('%H:%M')} 專屬情報解析**\n\n{ai_report}"
+
+                # 5. 發送給使用者
+                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                if user:
+                    try:
+                        if len(report_text) <= 2000:
+                            await user.send(report_text)
+                        else:
+                            for i in range(0, len(report_text), 1990):
+                                await user.send(report_text[i:i + 1990])
+                    except Exception as send_err:
+                        logger.error(f"無法發送給使用者 {uid}: {send_err}")
+
+        except Exception as e:
+            logger.error(f"定時持股健檢發生異常: {e}")
+
+
+    @scheduled_checkups.before_loop
+    async def before_checkups(self):
+        await self.bot.wait_until_ready()
+        logger.info("✅ 定時持股健檢排程引擎已啟動！等待觸發時間...")
 
 async def setup(bot):
     await bot.add_cog(WatchlistCog(bot))

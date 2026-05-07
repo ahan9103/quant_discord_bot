@@ -39,9 +39,8 @@ class QuantBot(commands.Bot):
         self.scheduler = AsyncIOScheduler()
 
     async def alert_monitor_task(self):
-        """🚨 警報監聽引擎：不斷從 Queue 中拿出報價並比對資料庫"""
         await self.wait_until_ready()
-        logger.info("🎯 警報監聽引擎已啟動，等待行情推播...")
+        logger.info("警報監聽引擎已啟動，等待行情推播...")
 
         while not self.is_closed():
             try:
@@ -63,7 +62,7 @@ class QuantBot(commands.Bot):
                             user = self.get_user(w.user_id)
                             if user:
                                 await user.send(
-                                    f"🔔 **停利警報**：您追蹤的 {symbol} 已達到目標價 **{w.target_price}**！現價：{current_price}")
+                                    f"**停利警報**：您追蹤的 {symbol} 已達到目標價 **{w.target_price}**！現價：{current_price}")
                                 # 觸發後可以選擇清除條件，避免狂發訊息
                                 w.target_price = None
 
@@ -72,7 +71,7 @@ class QuantBot(commands.Bot):
                             user = self.get_user(w.user_id)
                             if user:
                                 await user.send(
-                                    f"🚨 **停損警報**：您追蹤的 {symbol} 已跌破停損價 **{w.stop_loss}**！現價：{current_price}")
+                                    f"**停損警報**：您追蹤的 {symbol} 已跌破停損價 **{w.stop_loss}**！現價：{current_price}")
                                 w.stop_loss = None
 
                     await session.commit()
@@ -112,8 +111,6 @@ class QuantBot(commands.Bot):
         await self.load_extension("bot.cogs.watchlist")
         logger.info("✅ 已載入 Watchlist 指令模組")
 
-
-
         # 登入 Shioaji (使用 to_thread 避免卡死開機流程)
         logger.info("啟動 Shioaji 登入程序...")
         await asyncio.to_thread(sj_manager.login)
@@ -122,7 +119,7 @@ class QuantBot(commands.Bot):
         logger.info("✅ 已載入 Market 指令模組")
         await self.load_extension("bot.cogs.report")
         logger.info("✅ 已載入 Report 指令模組")
-        # 💡 啟動背景警報監聽任務
+        # 啟動背景警報監聽任務
         self.loop.create_task(self.alert_monitor_task())
 
         # 4. 同步斜線指令
@@ -134,7 +131,7 @@ bot = QuantBot()
 
 @bot.event
 async def on_ready():
-    logger.info(f'🚀 機器人登入成功：{bot.user}')
+    logger.info(f'機器人登入成功：{bot.user}')
 
 
 if __name__ == "__main__":

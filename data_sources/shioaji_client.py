@@ -81,11 +81,9 @@ class ShioajiManager:
                 update_time_str = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
 
             elif isinstance(raw_time, datetime):
-                # 如果 API 已經佛心地轉好 datetime 物件，直接格式化
                 update_time_str = raw_time.strftime('%Y-%m-%d %H:%M:%S')
 
             else:
-                # 都抓不到的最後防線
                 update_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             # 將資料整理成乾淨的字典回傳

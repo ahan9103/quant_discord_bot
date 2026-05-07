@@ -1,11 +1,8 @@
 # services/ai_analyzer.py
-import google.generativeai as genai
+from google import genai
 import os
 import logging
 import asyncio
-import pandas as pd
-
-from data_sources.shioaji_client import sj_manager
 
 logger = logging.getLogger("AIAnalyzer")
 
@@ -27,45 +24,6 @@ class AIAnalyzer:
             logger.info(f"✅ AI 模組初始化成功，模型設定為: {self.model_name}")
         except Exception as e:
             logger.error(f"❌ Gemini SDK 初始化過程發生異常: {e}")
-
-    async def generate_evening_report(self, inst_data: str, margin_data: str) -> str:
-        # 🛡️ 防禦性編程：確保 client 存在才執行
-        if not self.is_ready or self.client is None:
-            logger.error("試圖在 AI 模組未就緒時生成報告")
-            return "⚠️ AI 分析模組目前離線，請檢查系統環境變數設定。"
-        """
-        將盤後數據交給 Gemini 進行族群分類與多頭訊號分析
-        """
-        if not self.is_ready:
-            return "❌ AI 模組尚未初始化，請檢查 API KEY。"
-
-        # 💡 [面試亮點] Prompt Engineering (提示詞工程)
-        # 明確定義 LLM 的角色、輸入資料格式與嚴格的輸出格式
-        prompt = f"""
-                你是一位精通台灣股市「籌碼面分析」的量化交易員。請根據以下數據撰寫晚間總結報告。
-                絕對不要輸出問候語，直接從 ## 標題開始。
-
-                【法人籌碼】
-                {inst_data}
-
-                【融資動向】
-                {margin_data}
-
-                請包含：## 🏢 三大法人資金佈局 (外資/投信)、## ⚠️ 融資劇增警示與觀察、## 💡 明日開盤量化策略沙盤推演
-                """
-
-        try:
-            # 由於 Gemini API 呼叫是同步的 IO，我們把它丟到背景執行
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            logger.error(f"Gemini API 請求失敗: {e}")
-            return f"❌ 報告生成失敗，錯誤訊息: {str(e)}"
-
 
     async def generate_evening_report(self, inst_data: str, margin_data: str) -> str:
         """生成 21:30 的籌碼與法人晚報"""
@@ -143,6 +101,41 @@ class AIAnalyzer:
         except Exception as e:
             logger.error(f"Gemini API 呼叫失敗: {e}")
             return f"生成報告時發生錯誤: {e}"
+
+    async def analyze_news_sentiment(self, news_text: str) -> str:
+        """針對自選股新聞進行多空情緒分析"""
+        if not self.is_ready or self.client is None:
+            return "⚠️ AI 分析模組目前離線。"
+
+        # 💡 [面試亮點] 嚴格規範 LLM 輸出結構，強制進行多空量化評分
+        prompt = f"""
+        你是一位專業的金融 NLP (自然語言處理) 分析師。請閱讀以下關於使用者「自選股」的最新新聞與事件。
+
+        【任務要求】
+        1. 排除雜訊：如果新聞內容與該公司營運無關（例如單純大盤分析提到名字），請忽略。
+        2. 多空判定：請為每一檔有重大新聞的股票，給出明確的多空判定（🟢 偏多、🔴 偏空、⚪ 中性）。
+        3. 簡短摘要：用一句話總結該新聞對股價的潛在影響（例如：營收創高、法說會下修展望、除息日將近等）。
+        4. 絕對不要輸出任何問候語，直接從 `## 📰 自選股晨間新聞解析` 開始。
+
+        【自選股新聞資料】
+        {news_text}
+
+        【請依照以下格式輸出】
+        ## 📰 自選股晨間新聞與事件解析
+        - **[股票代號/名稱]** (🟢偏多/🔴偏空/⚪中性) : [一句話影響摘要]
+        """
+
+        try:
+            import asyncio
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model_name,
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            logger.error(f"新聞語意分析失敗: {e}")
+            return f"❌ 新聞分析生成失敗: {str(e)}"
 
 # 建立單例供外部使用
 ai_analyzer = AIAnalyzer()

@@ -106,37 +106,87 @@ class ReportCog(commands.Cog):
 
     def fetch_evening_chip_data(self):
         """
-        🔥 籌碼晚報 ETL (模擬串接 FinMind 或 TWSE 證交所 API)
-        """
-        logger.info("📡 開始獲取盤後三大法人與融資券數據...")
+                🔥 籌碼晚報 ETL (真實串接 FinMind OpenAPI)
+                """
+        import requests
+        from datetime import datetime
 
-        # 💡 面試亮點說明：
-        # 實務上 Shioaji 盤後籌碼較難抓全市場，通常會串接 FinMind API 或自己爬證交所。
-        # 這裡用精煉的模擬數據展示我們對於「籌碼過濾」的量化邏輯 (例如：土洋合作、融資異常)。
+        logger.info("📡 開始透過 FinMind API 獲取盤後三大法人與融資券數據...")
 
-        inst_data_str = """
-        【土洋(外資+投信)同步買超 Top 5】
-        - 2330 台積電: 外資買 15000張, 投信買 2000張 (外資認錯回補)
-        - 3324 雙鴻: 外資買 3000張, 投信買 1500張 (散熱族群持續吸金)
-        - 2382 廣達: 外資買 8000張, 投信買 1000張 (AI 伺服器建倉)
-        - 1519 華城: 外資買 1200張, 投信買 800張 (重電政策護盤)
-        - 3017 奇鋐: 外資買 2500張, 投信買 1200張
-        """
+        # 1. 決定資料日期 (實務上若遇到假日，需寫邏輯往前推至最近交易日)
+        date_str = datetime.now().strftime("%Y-%m-%d")
 
-        margin_data_str = """
-        【融資單日暴增 Top 5】
-        - 2603 長榮: 融資大增 8000張 (當沖與散戶搶進航運)
-        - 2368 金像電: 融資增 3000張, 但法人買超 (主力疑似利用融資鎖碼)
-        - 3406 玉晶光: 融資增 2500張, 法人賣超 1000張 (散戶接刀風險高)
-        """
+        try:
+            # ==========================================
+            # 📊 [A] 獲取三大法人買賣超資料
+            # ==========================================
+            inst_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&date={date_str}"
+            inst_res = requests.get(inst_url, timeout=10)
+            inst_data = inst_res.json().get('data', [])
+            inst_df = pd.DataFrame(inst_data)
 
-        return inst_data_str, margin_data_str
+            # ==========================================
+            # 📊 [B] 獲取融資融券餘額資料
+            # ==========================================
+            margin_url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMarginPurchaseShortSale&date={date_str}"
+            margin_res = requests.get(margin_url, timeout=10)
+            margin_data = margin_res.json().get('data', [])
+            margin_df = pd.DataFrame(margin_data)
+
+        except Exception as e:
+            logger.error(f"FinMind API 獲取失敗: {e}")
+            return "❌ 無法連線至籌碼資料庫", "❌ 無法連線至籌碼資料庫"
+
+        # ==========================================
+        #  數據轉換與特徵工程 (Pandas Transform)
+        # ==========================================
+        inst_str = f"【🏢 土洋(外資+投信)同步買超 Top 5】 (日期: {date_str})\n"
+        margin_str = f"【⚠️ 融資單日暴增 Top 5】 (日期: {date_str})\n"
+
+        # 處理法人籌碼
+        if not inst_df.empty:
+            # 1. 計算各分點的淨買超 (買進 - 賣出)
+            inst_df['net_buy'] = inst_df['buy'] - inst_df['sell']
+
+            # 2. 利用 Pandas 萃取出外資與投信的 DataFrame，並將股票代號設為 Index
+            foreign_df = inst_df[inst_df['name'] == 'Foreign_Investor'].set_index('stock_id')[['net_buy']].rename(
+                columns={'net_buy': 'F_Buy'})
+            trust_df = inst_df[inst_df['name'] == 'Investment_Trust'].set_index('stock_id')[['net_buy']].rename(
+                columns={'net_buy': 'I_Buy'})
+
+            # 3. 找出土洋都有動作的標的
+            chip_df = foreign_df.join(trust_df, how='inner').dropna()
+
+            # 4. 篩選「土洋同買」且排序
+            co_buy_df = chip_df[(chip_df['F_Buy'] > 0) & (chip_df['I_Buy'] > 0)].copy()
+            co_buy_df['Total_Buy'] = co_buy_df['F_Buy'] + co_buy_df['I_Buy']
+            top_co_buy = co_buy_df.sort_values(by='Total_Buy', ascending=False).head(5)
+
+            for stock_id, row in top_co_buy.iterrows():
+                inst_str += f"- {stock_id}: 外資買 {row['F_Buy'] / 1000:.0f}張, 投信買 {row['I_Buy'] / 1000:.0f}張\n"
+        else:
+            inst_str += "- 今日證交所尚未公佈法人資料，或 API 暫無數據。\n"
+
+        # 處理融資數據
+        if not margin_df.empty:
+            # 1. 計算單日融資增加張數 = (融資買進 - 融資賣出) / 1000
+            margin_df['Margin_Net_Increase'] = (margin_df['MarginPurchaseBuy'] - margin_df['MarginPurchaseSell']) / 1000
+
+            # 2. 篩選融資大增的標的
+            top_margin = margin_df[margin_df['Margin_Net_Increase'] > 0].sort_values(by='Margin_Net_Increase',
+                                                                                     ascending=False).head(5)
+
+            for _, row in top_margin.iterrows():
+                margin_str += f"- {row['stock_id']}: 融資單日大增 {row['Margin_Net_Increase']:.0f}張\n"
+        else:
+            margin_str += "- 今日證交所尚未公佈融資資料，或 API 暫無數據。\n"
+
+        logger.info("✅ 籌碼晚報 ETL 處理完畢！")
+        return inst_str, margin_str
 
     # ==========================================
-    # 🤖 2. 手動觸發指令區 (Slash Commands)
+    # 2. 手動觸發指令區 (Slash Commands)
     # ==========================================
-    # ... (保留您原本的 @app_commands.command(name="daily_report") ) ...
-
     @app_commands.command(name="evening_report", description="產生 21:30 盤後籌碼與三大法人分析晚報")
     async def generate_evening(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -156,7 +206,7 @@ class ReportCog(commands.Cog):
                         await interaction.channel.send(chunk)
         except Exception as e:
             logger.error(f"晚報生成失敗: {e}")
-            await interaction.followup.send("❌ 晚報生成失敗。")
+            await interaction.followup.send(" 晚報生成失敗。")
 
     @app_commands.command(name="daily_report", description="產生今日盤後資金流向與 AI 分析報告")
     async def generate_report(self, interaction: discord.Interaction):
@@ -187,9 +237,9 @@ class ReportCog(commands.Cog):
             await interaction.followup.send("❌ 報告生成失敗，請檢查系統日誌。")
 
     # ==========================================
-    # ⏰ 3. 自動排程區 (Cron Jobs)
+    # 3. 自動排程區 (Cron Jobs)
     # ==========================================
-    # 設定時間：14:00 發午報，21:30 發晚報 (需注意機器人主機時區，這裡我們強制綁定台北時間)
+    # 設定時間：14:00 發午報，21:30 發晚報
     @tasks.loop(time=[
         time(hour=14, minute=0, tzinfo=timezone(timedelta(hours=8))),
         time(hour=21, minute=30, tzinfo=timezone(timedelta(hours=8)))
@@ -200,7 +250,7 @@ class ReportCog(commands.Cog):
             logger.info("今天是週末，跳過自動報告。")
             return
 
-        logger.info(f"⏰ 觸發定時報告！目前時間：{now.strftime('%H:%M')}")
+        logger.info(f"觸發定時報告！目前時間：{now.strftime('%H:%M')}")
 
         try:
             if now.hour == 14:
@@ -227,7 +277,7 @@ class ReportCog(commands.Cog):
                 user = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
                 if user:
                     try:
-                        await user.send(f"📊 **[系統自動推播] 您的量化{report_type}已出爐！**")
+                        await user.send(f"**[系統自動推播] 您的量化{report_type}已出爐！**")
                         # 如果字數過長一樣做切分處理
                         if len(report_text) <= 2000:
                             await user.send(report_text)

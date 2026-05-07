@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.orm import declarative_base
 from core.config import DATABASE_URL
 
-# 建立非同步引擎 (echo=False 避免在終端機印出過多 SQL 語句)
 engine = create_async_engine(DATABASE_URL, echo=False)
 
 # 建立 Session 工廠
