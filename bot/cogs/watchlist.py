@@ -124,22 +124,40 @@ class WatchlistCog(commands.Cog):
     @app_commands.autocomplete(symbol=all_symbol_autocomplete)
     async def add_stock(self, interaction: discord.Interaction, symbol: str, cost_price: Optional[float] = None):
         # 1. 延遲回覆 (Defer) 爭取運算時間
-        # 這會讓 Discord 畫面上顯示「機器人正在思考中...」，避免 3 秒 Timeout
         await interaction.response.defer()
 
-        # 2. 處理股票代號格式 (將純數字台股自動加上 .TW)
+        # 2. 處理股票代號格式
         symbol = symbol.upper().strip()
         query_symbol = f"{symbol}.TW" if symbol.isdigit() and len(symbol) == 4 else symbol
 
         # 3. 開啟資料庫 Session
         async with AsyncSessionLocal() as session:
+            # --- [核心修正] 自動檢查並新增使用者 ---
+            # 1. 先從 users 表查詢這位使用者
+            # 注意：這裡的 User.discord_id 要對應你 Model 的定義
+            user_result = await session.execute(
+                select(User).where(User.discord_id == interaction.user.id)
+            )
+            user_obj = user_result.scalar_one_or_none()
+
+            # 2. 如果不存在，就自動新增（註冊）
+            if not user_obj:
+                print(f"检测到新用戶 {interaction.user.id}，正在自動註冊...")
+                user_obj = User(
+                    discord_id=interaction.user.id,
+                    is_premium=False  # 給予預設值
+                )
+                session.add(user_obj)
+                # 先 flush 讓資料庫知道這個 ID 存在了，後面的 watchlist 才能引用它
+                await session.flush()
+                # ========================================================
+
             # --- 檢查 Tickers 字典表是否已經有這檔股票 ---
             result = await session.execute(select(Ticker).where(Ticker.symbol == query_symbol))
             ticker_obj = result.scalar_one_or_none()
 
             # 如果資料庫沒有這檔股票的資料，就去 yfinance 抓
             if not ticker_obj:
-                # 使用 to_thread 將同步的 yfinance 丟到背景執行，不卡死主迴圈
                 stock_info = await asyncio.to_thread(fetch_stock_info_sync, query_symbol)
 
                 if not stock_info:
@@ -175,7 +193,7 @@ class WatchlistCog(commands.Cog):
             )
             session.add(new_watch)
 
-            # 提交資料庫交易 (Commit)
+            # 提交資料庫交易 (Commit) - 這裡會把 user, ticker, watchlist 一次性全部正式寫入
             await session.commit()
 
             # 4. 回覆成功訊息
