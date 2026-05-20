@@ -1,8 +1,12 @@
 # bot/main.py
+
+
 import discord
 from discord.ext import commands
 import os
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 import asyncio
 from dotenv import load_dotenv
@@ -16,7 +20,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from data_sources.shioaji_client import sj_manager
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.session import init_db
 

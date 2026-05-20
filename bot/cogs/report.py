@@ -242,7 +242,7 @@ class ReportCog(commands.Cog):
     # 設定時間：14:00 發午報，21:30 發晚報
     @tasks.loop(time=[
         time(hour=14, minute=0, tzinfo=timezone(timedelta(hours=8))),
-        time(hour=21, minute=30, tzinfo=timezone(timedelta(hours=8)))
+        time(hour=22, minute=30, tzinfo=timezone(timedelta(hours=8)))
     ])
     async def scheduled_reports(self):
         now = datetime.now(self.tz)
