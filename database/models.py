@@ -1,10 +1,10 @@
 # database/models.py
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Float, DateTime, ForeignKey, BigInteger, Boolean
+from sqlalchemy import String, Float, DateTime, ForeignKey, BigInteger, Boolean, Column, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime
 from typing import List, Optional
-
+from sqlalchemy.sql import func
 
 # 建立宣告式基礎類別
 class Base(DeclarativeBase):
@@ -98,5 +98,19 @@ class UserStrategy(Base):
     user: Mapped["User"] = relationship(back_populates="strategies")
     ticker: Mapped["Ticker"] = relationship(back_populates="strategies")
 
+class Channel(Base):
+    __tablename__ = "monitored_channels"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_url = Column(String, unique=True, nullable=False)
+    channel_name = Column(String, nullable=True)
+    category = Column(String, default="MARKET") # MARKET 或 STOCK
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+
     def __repr__(self) -> str:
         return f"<UserStrategy(user_id={self.user_id}, symbol='{self.symbol}', strategy='{self.strategy_name}')>"
+    
+
