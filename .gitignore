@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyc
+*.pyo
 
 # Virtual environments
 .venv/
@@ -13,6 +15,7 @@ ENV/
 .env
 .env.*
 !.env.example
+processed_videos.txt
 
 # PyCharm / JetBrains
 .idea/
