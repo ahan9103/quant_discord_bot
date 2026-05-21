@@ -32,8 +32,3 @@
   - `AIAnalyzer`: 統一封裝 Gemini SDK，並實作 **指數退避重試機制 (Exponential Backoff)**。
   - `NewsService`: 負責非結構化資料的爬取與資料清洗。
 - **Data Layer**: 使用 SQLAlchemy 2.0 配合非同步驅動，管理多用戶與自選股關係模型。
-
-## 🛠️ 安裝與快速開始
-1. **環境設定**
-   ```bash
-   pip install discord.py shioaji pandas sqlalchemy aiopg google-genai requests
