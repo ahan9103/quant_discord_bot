@@ -1,4 +1,3 @@
-# services/ai_analyzer.py
 from google import genai
 import os
 import logging
@@ -6,31 +5,51 @@ import asyncio
 
 logger = logging.getLogger("AIAnalyzer")
 
+_QUOTA_KEYWORDS = ("quota", "429", "resource exhausted", "rate limit", "too many requests")
+
+
 class AIAnalyzer:
     def __init__(self):
         api_key = os.getenv("GEMINI_API_KEY")
         self.is_ready = False
         self.client = None
-        self.model_name = 'gemini-2.5-flash'
+        self.primary_model = "gemini-2.5-flash"
+        self.fallback_model = "gemini-2.0-flash"
 
         if not api_key:
             logger.error("❌ 未設定 GEMINI_API_KEY")
             return
 
         try:
-            # 建立 Client 實例
             self.client = genai.Client(api_key=api_key)
             self.is_ready = True
-            logger.info(f"✅ AI 模組初始化成功，模型設定為: {self.model_name}")
+            logger.info(f"✅ AI 模組初始化成功，主要模型: {self.primary_model}，備援模型: {self.fallback_model}")
         except Exception as e:
             logger.error(f"❌ Gemini SDK 初始化過程發生異常: {e}")
 
+    async def _generate(self, prompt: str) -> str:
+        """呼叫 Gemini API，若主要模型用量超限則自動切換備援模型。"""
+        for model in [self.primary_model, self.fallback_model]:
+            try:
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=model,
+                    contents=prompt
+                )
+                if model == self.fallback_model:
+                    logger.warning(f"⚠️ 已切換至備援模型 {model} 完成生成")
+                return response.text
+            except Exception as e:
+                if any(k in str(e).lower() for k in _QUOTA_KEYWORDS):
+                    logger.warning(f"⚠️ 模型 {model} 用量超限：{e}，嘗試備援模型...")
+                    continue
+                raise
+        raise RuntimeError("主要模型與備援模型均無法使用")
+
     async def generate_evening_report(self, inst_data: str, margin_data: str) -> str:
-        """生成 21:30 的籌碼與法人晚報"""
         if not self.is_ready:
             return "❌ AI 模組尚未初始化。"
 
-        # 💡 [面試亮點] 針對籌碼面的專屬 Prompt
         prompt = f"""
         你是一位精通台灣股市「籌碼面分析」的量化交易員。請根據我提供的盤後籌碼數據，撰寫一份「台股晚間籌碼總結報告」。
 
@@ -58,14 +77,9 @@ class AIAnalyzer:
         """
 
         try:
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text
+            return await self._generate(prompt)
         except Exception as e:
-            logger.error(f"Gemini API 籌碼晚報生成失敗: {e}")
+            logger.error(f"籌碼晚報生成失敗: {e}")
             return f"籌碼報告生成失敗: {e}"
 
     async def generate_market_report(self, top_value_data: str, surge_volume_data: str) -> str:
@@ -91,23 +105,15 @@ class AIAnalyzer:
         """
 
         try:
-            # 新版 SDK 的呼叫方式
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text
+            return await self._generate(prompt)
         except Exception as e:
-            logger.error(f"Gemini API 呼叫失敗: {e}")
+            logger.error(f"市場報告生成失敗: {e}")
             return f"生成報告時發生錯誤: {e}"
 
     async def analyze_news_sentiment(self, news_text: str) -> str:
-        """針對自選股新聞進行多空情緒分析"""
         if not self.is_ready or self.client is None:
             return "⚠️ AI 分析模組目前離線。"
 
-        # 💡 [面試亮點] 嚴格規範 LLM 輸出結構，強制進行多空量化評分
         prompt = f"""
         你是一位專業的金融 NLP (自然語言處理) 分析師。請閱讀以下關於使用者「自選股」的最新新聞與事件。
 
@@ -126,16 +132,10 @@ class AIAnalyzer:
         """
 
         try:
-            import asyncio
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model_name,
-                contents=prompt
-            )
-            return response.text
+            return await self._generate(prompt)
         except Exception as e:
             logger.error(f"新聞語意分析失敗: {e}")
             return f"❌ 新聞分析生成失敗: {str(e)}"
 
-# 建立單例供外部使用
+
 ai_analyzer = AIAnalyzer()

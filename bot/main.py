@@ -9,62 +9,42 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging
 import asyncio
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 from data_sources.shioaji_client import sj_manager
-from database.session import AsyncSessionLocal
+from database.session import AsyncSessionLocal, init_db
 from database.models import Watchlist
 from sqlalchemy import select
-
-# 引入非同步排程器
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from data_sources.shioaji_client import sj_manager
-
-
-from database.session import init_db
-
-# 引入我們剛剛寫好的同步任務 (假設您放在 tasks 資料夾)
 from tasks.sync_data import sync_us_symbols, sync_tw_symbols
 
-# from tasks.sync_data import sync_tw_symbols # 等您補上台股的部分後取消註解
-
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("QuantBot")
-
-import os
-import logging
-from logging.handlers import RotatingFileHandler
 
 
-# ================= 1. 全局 Log 系統設定 =================
+# ================= 全局 Log 系統設定 =================
 def setup_global_logger():
-    # 設定 log 檔案的存放位置 (放在專案根目錄的 bot.log)
-    log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bot.log")
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(root_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "bot.log")
 
-    # 建立一個 Logger
-    logger = logging.getLogger()  # 抓取 Root Logger，這樣所有模組的 log 都會被捕捉
-    logger.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
 
-    # 格式化：[時間] - [級別] - [模組] - [訊息]
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
-    # 1. 寫入檔案的 Handler (最大 5MB，保留 3 份舊檔，避免硬碟塞爆)
     file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8')
     file_handler.setFormatter(formatter)
 
-    # 2. 顯示在終端機的 Handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    # 把 Handler 裝上去
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
 
-    return logger
+    return root_logger
 
 
-# 啟動 Logger
 logger = setup_global_logger()
 logger.info("系統啟動：全局 Log 系統已掛載！")
 

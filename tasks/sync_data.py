@@ -15,28 +15,47 @@ from database.models import Ticker
 logger = logging.getLogger("SyncTask")
 
 
-# 將會阻塞的爬蟲與 Pandas 處理獨立為一般函式
 def fetch_us_symbols_sync() -> list[dict]:
+    import io
     headers = {"User-Agent": "Mozilla/5.0"}
-    symbols = set()
 
-    # 1. S&P 500
-    sp500_url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    res = requests.get(sp500_url, headers=headers)
-    sp500 = pd.read_html(res.text)[0]
-    sp500 = sp500[sp500["Symbol"].notna()]
-    for _, row in sp500.iterrows():
-        symbols.add((row["Symbol"], row["Security"]))
+    # 標準美股代號格式：1-5 個大寫字母，允許 .A/.B 這類股份類別後綴
+    SYMBOL_PATTERN = r"^[A-Z]{1,5}(\.[A-Z])?$"
 
-    # 2. NASDAQ
-    nasdaq_url = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
-    nasdaq_df = pd.read_csv(nasdaq_url, sep="|")
-    nasdaq_df = nasdaq_df[nasdaq_df["Symbol"].notna()]
-    nasdaq_df = nasdaq_df[nasdaq_df["Test Issue"] == "N"]
-    for _, row in nasdaq_df.iterrows():
-        symbols.add((row["Symbol"], row["Security Name"]))
+    # NASDAQ 上市股票
+    nasdaq_raw = requests.get(
+        "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+        headers=headers, timeout=15
+    ).text
+    nasdaq_df = pd.read_csv(io.StringIO(nasdaq_raw), sep="|")
+    nasdaq_df = nasdaq_df[
+        (nasdaq_df["Test Issue"] == "N") &
+        nasdaq_df["Symbol"].str.match(SYMBOL_PATTERN, na=False)
+    ][["Symbol", "Security Name"]].rename(columns={"Security Name": "Name"})
 
-    return [{"symbol": sym.replace(".", "-"), "name": name, "market": "US"} for sym, name in symbols]
+    # NYSE / AMEX / BATS 等其他交易所
+    other_raw = requests.get(
+        "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+        headers=headers, timeout=15
+    ).text
+    other_df = pd.read_csv(io.StringIO(other_raw), sep="|")
+    other_df = other_df[
+        (other_df["Test Issue"] == "N") &
+        other_df["ACT Symbol"].str.match(SYMBOL_PATTERN, na=False)
+    ][["ACT Symbol", "Security Name"]].rename(columns={"ACT Symbol": "Symbol", "Security Name": "Name"})
+
+    combined = (
+        pd.concat([nasdaq_df, other_df])
+        .drop_duplicates(subset="Symbol")
+        .reset_index(drop=True)
+    )
+
+    logger.info(f"✅ 共取得 {len(combined)} 筆美股標的 (NASDAQ + NYSE/AMEX/BATS)")
+
+    return [
+        {"symbol": row["Symbol"].replace(".", "-"), "name": row["Name"], "market": "US"}
+        for row in combined.to_dict("records")
+    ]
 
 
 async def sync_us_symbols():
@@ -95,7 +114,7 @@ def fetch_tw_symbols_sync() -> list[dict]:
             })
         return results
     except Exception as e:
-        print(f"抓取台股資料失敗: {e}")
+        logger.error(f"抓取台股資料失敗: {e}")
         return []
 
 
