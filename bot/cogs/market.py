@@ -2,14 +2,16 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
+import logging
 
-# 💡 補上遺漏的匯入 (Import)
 from sqlalchemy import select
 from database.models import Ticker, Watchlist
 from database.session import AsyncSessionLocal
 from data_sources.shioaji_client import sj_manager
 
-# 💡 補上類別宣告
+logger = logging.getLogger("MarketCog")
+
+
 class MarketCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -60,8 +62,11 @@ class MarketCog(commands.Cog):
         data = await asyncio.to_thread(sj_manager.get_stock_snapshot, query_symbol)
 
         if "error" in data:
+            logger.warning(f"報價查詢失敗 [{query_symbol}]: {data['error']}")
             await interaction.followup.send(f"❌ 查詢失敗：{data['error']}")
             return
+
+        logger.info(f"報價查詢成功 [{query_symbol}] 現價={data['close']}")
 
         # 3. 製作精美的報價卡片 (Embed)
         if data['change_price'] > 0:

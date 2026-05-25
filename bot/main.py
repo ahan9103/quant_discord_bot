@@ -155,4 +155,4 @@ async def on_ready():
 
 if __name__ == "__main__":
     TOKEN = os.getenv("DISCORD_TOKEN")
-    bot.run(TOKEN)
+    bot.run(TOKEN, log_handler=None)

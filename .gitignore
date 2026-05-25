@@ -76,3 +76,8 @@ docker-compose.override.yml
 *.swp
 *.swo
 *~
+/bot/cogs/__pycache__
+/bot/cogs/__pycache__
+/bot/cogs/__pycache__
+/database/__pycache__
+/tasks/__pycache__

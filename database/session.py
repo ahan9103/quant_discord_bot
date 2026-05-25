@@ -10,7 +10,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # 建立非同步資料庫引擎 (echo=True 可以在終端機印出 SQL 語句，方便開發期除錯)
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=False)
 
 # 建立 Session 工廠，供後續操作資料庫時產生 session
 AsyncSessionLocal = async_sessionmaker(
