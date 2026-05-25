@@ -256,32 +256,40 @@ class WatchlistCog(commands.Cog):
                 user_ids = users_result.scalars().all()
 
             for uid in user_ids:
-                async with AsyncSessionLocal() as session:
-                    stmt = select(Watchlist.symbol).where(Watchlist.user_id == uid)
-                    result = await session.execute(stmt)
-                    my_watchlist = result.scalars().all()
+                try:
+                    async with AsyncSessionLocal() as session:
+                        stmt = select(Watchlist.symbol).where(Watchlist.user_id == uid)
+                        result = await session.execute(stmt)
+                        my_watchlist = result.scalars().all()
 
-                if not my_watchlist:
-                    continue
+                    if not my_watchlist:
+                        continue
 
-                raw_news = await NewsService.fetch_watchlist_news(my_watchlist)
+                    raw_news = await NewsService.fetch_watchlist_news(my_watchlist)
 
-                if "發生錯誤" in raw_news or "無重大新聞" in raw_news:
-                    report_text = f"**[系統推播] {now.strftime('%H:%M')} 持股動態：**\n{raw_news}"
-                else:
+                    # NewsService 失敗時回傳含「發生網路錯誤」的字串，直接跳過不呼叫 AI
+                    if "發生網路錯誤" in raw_news:
+                        logger.warning(f"使用者 {uid} 的新聞抓取失敗，略過本次推播")
+                        continue
+
                     ai_report = await ai_analyzer.analyze_news_sentiment(raw_news)
                     report_text = f"**[持股健檢] {now.strftime('%H:%M')} 專屬情報解析**\n\n{ai_report}"
 
-                user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
-                if user:
                     try:
+                        user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                    except Exception as fetch_err:
+                        logger.warning(f"找不到使用者 {uid}，跳過: {fetch_err}")
+                        continue
+
+                    if user:
                         if len(report_text) <= 2000:
                             await user.send(report_text)
                         else:
                             for i in range(0, len(report_text), 1990):
                                 await user.send(report_text[i:i + 1990])
-                    except Exception as send_err:
-                        logger.error(f"無法發送給使用者 {uid}: {send_err}")
+
+                except Exception as user_err:
+                    logger.error(f"處理使用者 {uid} 的健檢推播時發生異常: {user_err}")
 
         except Exception as e:
             logger.error(f"定時持股健檢發生異常: {e}")

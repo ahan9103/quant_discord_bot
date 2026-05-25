@@ -94,7 +94,11 @@ class ReportCog(commands.Cog):
             logger.info(f"準備將{report_type}廣播給 {len(user_ids)} 位使用者...")
 
             for discord_id in user_ids:
-                user = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+                try:
+                    user = self.bot.get_user(discord_id) or await self.bot.fetch_user(discord_id)
+                except Exception as fetch_err:
+                    logger.warning(f"找不到使用者 {discord_id}，跳過: {fetch_err}")
+                    continue
                 if user:
                     try:
                         await user.send(f"**[系統自動推播] 您的量化{report_type}已出爐！**")
