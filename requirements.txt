@@ -12,6 +12,7 @@ pandas
 google-generativeai
 yfinance
 FinMind
+httpx
 
 # Task Scheduler
 APScheduler

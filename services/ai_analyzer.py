@@ -1,4 +1,5 @@
 from google import genai
+import httpx
 import os
 import logging
 import asyncio
@@ -6,6 +7,11 @@ import asyncio
 logger = logging.getLogger("AIAnalyzer")
 
 _QUOTA_KEYWORDS = ("quota", "429", "resource exhausted", "rate limit", "too many requests")
+
+# OpenRouter API endpoint（相容 OpenAI 格式）
+_OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# 預設備援模型（可於 .env 設定 OPENROUTER_MODEL 覆蓋）
+_OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-chat-v3-0324:free"
 
 
 class AIAnalyzer:
@@ -16,38 +22,97 @@ class AIAnalyzer:
         self.primary_model = "gemini-2.5-flash"
         self.fallback_model = "gemini-2.0-flash"
 
+        # OpenRouter 設定
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+        self.openrouter_model = os.getenv("OPENROUTER_MODEL", _OPENROUTER_DEFAULT_MODEL)
+        self.openrouter_ready = bool(self.openrouter_api_key)
+
         if not api_key:
             logger.error("❌ 未設定 GEMINI_API_KEY")
-            return
-
-        try:
-            self.client = genai.Client(api_key=api_key)
-            self.is_ready = True
-            logger.info(f"✅ AI 模組初始化成功，主要模型: {self.primary_model}，備援模型: {self.fallback_model}")
-        except Exception as e:
-            logger.error(f"❌ Gemini SDK 初始化過程發生異常: {e}")
-
-    async def _generate(self, prompt: str) -> str:
-        """呼叫 Gemini API，若主要模型用量超限則自動切換備援模型。"""
-        for model in [self.primary_model, self.fallback_model]:
+        else:
             try:
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
-                    model=model,
-                    contents=prompt
+                self.client = genai.Client(api_key=api_key)
+                self.is_ready = True
+                logger.info(
+                    f"✅ AI 模組初始化成功，主要模型: {self.primary_model}，"
+                    f"Gemini 備援: {self.fallback_model}"
                 )
-                if model == self.fallback_model:
-                    logger.warning(f"⚠️ 已切換至備援模型 {model} 完成生成")
-                return response.text
             except Exception as e:
-                if any(k in str(e).lower() for k in _QUOTA_KEYWORDS):
-                    logger.warning(f"⚠️ 模型 {model} 用量超限：{e}，嘗試備援模型...")
-                    continue
-                raise
-        raise RuntimeError("主要模型與備援模型均無法使用")
+                logger.error(f"❌ Gemini SDK 初始化過程發生異常: {e}")
 
+        if self.openrouter_ready:
+            logger.info(f"✅ OpenRouter 備援已就緒，模型: {self.openrouter_model}")
+        else:
+            logger.warning("⚠️ 未設定 OPENROUTER_API_KEY，OpenRouter 備援不可用")
+
+    # ------------------------------------------------------------------
+    # 內部：OpenRouter fallback（async，httpx）
+    # ------------------------------------------------------------------
+    async def _generate_openrouter(self, prompt: str) -> str:
+        """透過 OpenRouter API（OpenAI 相容格式）生成文字。"""
+        headers = {
+            "Authorization": f"Bearer {self.openrouter_api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Quant Discord Bot",
+        }
+        payload = {
+            "model": self.openrouter_model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(_OPENROUTER_API_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
+    # ------------------------------------------------------------------
+    # 內部：統一生成入口（Gemini primary → Gemini fallback → OpenRouter）
+    # ------------------------------------------------------------------
+    async def _generate(self, prompt: str) -> str:
+        """
+        呼叫順序：
+          1. gemini-2.5-flash
+          2. gemini-2.0-flash（Gemini quota 錯誤時）
+          3. OpenRouter（兩個 Gemini 均失敗時）
+        """
+        # --- Gemini 嘗試 ---
+        if self.client:
+            for model in [self.primary_model, self.fallback_model]:
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=model,
+                        contents=prompt,
+                    )
+                    if model == self.fallback_model:
+                        logger.warning(f"⚠️ 已切換至 Gemini 備援模型 {model} 完成生成")
+                    return response.text
+                except Exception as e:
+                    if any(k in str(e).lower() for k in _QUOTA_KEYWORDS):
+                        logger.warning(f"⚠️ Gemini 模型 {model} 用量超限：{e}，嘗試下一個備援...")
+                        continue
+                    raise  # 非 quota 錯誤直接往上拋
+
+        # --- OpenRouter fallback ---
+        if self.openrouter_ready:
+            try:
+                logger.warning(
+                    f"⚠️ Gemini 全部模型額度不足，切換至 OpenRouter ({self.openrouter_model})"
+                )
+                result = await self._generate_openrouter(prompt)
+                logger.info("✅ OpenRouter 備援生成成功")
+                return result
+            except Exception as e:
+                logger.error(f"❌ OpenRouter 備援也失敗：{e}")
+                raise RuntimeError(f"所有 AI 提供者均失敗，最後錯誤：{e}") from e
+
+        raise RuntimeError("Gemini 主／備援模型均無法使用，且未設定 OpenRouter 備援")
+
+    # ------------------------------------------------------------------
+    # 公開方法
+    # ------------------------------------------------------------------
     async def generate_evening_report(self, inst_data: str, margin_data: str) -> str:
-        if not self.is_ready:
+        if not self.is_ready and not self.openrouter_ready:
             return "❌ AI 模組尚未初始化。"
 
         prompt = f"""
@@ -83,7 +148,7 @@ class AIAnalyzer:
             return f"籌碼報告生成失敗: {e}"
 
     async def generate_market_report(self, top_value_data: str, surge_volume_data: str) -> str:
-        if not self.is_ready:
+        if not self.is_ready and not self.openrouter_ready:
             return "❌ AI 模組尚未初始化，請檢查 API KEY。"
 
         prompt = f"""
@@ -111,7 +176,7 @@ class AIAnalyzer:
             return f"生成報告時發生錯誤: {e}"
 
     async def analyze_news_sentiment(self, news_text: str) -> str:
-        if not self.is_ready or self.client is None:
+        if not self.is_ready and not self.openrouter_ready:
             return "⚠️ AI 分析模組目前離線。"
 
         prompt = f"""
