@@ -239,8 +239,6 @@ class WatchlistCog(commands.Cog):
     # ==========================================
     @tasks.loop(time=[
         time(hour=8, minute=30, tzinfo=timezone(timedelta(hours=8))),
-        time(hour=10, minute=0, tzinfo=timezone(timedelta(hours=8))),
-        time(hour=11, minute=30, tzinfo=timezone(timedelta(hours=8))),
         time(hour=13, minute=0, tzinfo=timezone(timedelta(hours=8)))
     ])
     async def scheduled_checkups(self):
