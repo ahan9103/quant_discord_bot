@@ -11,7 +11,7 @@ _QUOTA_KEYWORDS = ("quota", "429", "resource exhausted", "rate limit", "too many
 # OpenRouter API endpoint（相容 OpenAI 格式）
 _OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # 預設備援模型（可於 .env 設定 OPENROUTER_MODEL 覆蓋）
-_OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-chat-v3-0324:free"
+_OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash:free"
 
 
 class AIAnalyzer:
@@ -61,6 +61,12 @@ class AIAnalyzer:
         }
         async with httpx.AsyncClient(timeout=90.0) as client:
             resp = await client.post(_OPENROUTER_API_URL, headers=headers, json=payload)
+            if resp.is_error:
+                # 把 OpenRouter 回傳的錯誤訊息一起記錄，方便診斷 404/模型不存在等問題
+                logger.error(
+                    f"❌ OpenRouter HTTP {resp.status_code}，"
+                    f"模型: {self.openrouter_model}，回應: {resp.text}"
+                )
             resp.raise_for_status()
             data = resp.json()
             return data["choices"][0]["message"]["content"]

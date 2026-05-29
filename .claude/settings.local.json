@@ -4,7 +4,8 @@
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
-      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import httpx; print\\(httpx.__version__\\)\")"
+      "Bash(.venv\\\\Scripts\\\\python.exe -c \"import httpx; print\\(httpx.__version__\\)\")",
+      "WebFetch(domain:openrouter.ai)"
     ]
   }
 }

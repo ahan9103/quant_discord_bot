@@ -82,3 +82,4 @@ docker-compose.override.yml
 /database/__pycache__
 /tasks/__pycache__
 /.claude
+/.claude
