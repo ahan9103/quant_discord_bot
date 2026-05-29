@@ -6,7 +6,11 @@ import asyncio
 
 logger = logging.getLogger("AIAnalyzer")
 
-_QUOTA_KEYWORDS = ("quota", "429", "resource exhausted", "rate limit", "too many requests")
+# 觸發切換備援的關鍵字：quota 超限 + 服務暫時不可用（503/高流量）
+_FALLBACK_KEYWORDS = (
+    "quota", "429", "resource exhausted", "rate limit", "too many requests",  # quota 超限
+    "503", "unavailable", "high demand", "try again later", "overloaded",      # 服務暫時不可用
+)
 
 # OpenRouter API endpoint（相容 OpenAI 格式）
 _OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -78,7 +82,7 @@ class AIAnalyzer:
         """
         呼叫順序：
           1. gemini-2.5-flash
-          2. gemini-2.0-flash（Gemini quota 錯誤時）
+          2. gemini-2.0-flash（quota 超限 或 503 暫時不可用時）
           3. OpenRouter（兩個 Gemini 均失敗時）
         """
         # --- Gemini 嘗試 ---
@@ -94,10 +98,10 @@ class AIAnalyzer:
                         logger.warning(f"⚠️ 已切換至 Gemini 備援模型 {model} 完成生成")
                     return response.text
                 except Exception as e:
-                    if any(k in str(e).lower() for k in _QUOTA_KEYWORDS):
-                        logger.warning(f"⚠️ Gemini 模型 {model} 用量超限：{e}，嘗試下一個備援...")
+                    if any(k in str(e).lower() for k in _FALLBACK_KEYWORDS):
+                        logger.warning(f"⚠️ Gemini 模型 {model} 暫時無法使用：{e}，嘗試下一個備援...")
                         continue
-                    raise  # 非 quota 錯誤直接往上拋
+                    raise  # 其他非暫時性錯誤直接往上拋
 
         # --- OpenRouter fallback ---
         if self.openrouter_ready:
