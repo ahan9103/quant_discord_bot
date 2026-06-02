@@ -15,7 +15,8 @@ _FALLBACK_KEYWORDS = (
 # OpenRouter API endpoint（相容 OpenAI 格式）
 _OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 # 預設備援模型（可於 .env 設定 OPENROUTER_MODEL 覆蓋）
-_OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4-flash:free"
+# 注意：OpenRouter free tier 模型會異動，若出現 404 請至 openrouter.ai/models 確認可用清單
+_OPENROUTER_DEFAULT_MODEL = "moonshotai/kimi-k2.6:free"
 
 
 class AIAnalyzer:
