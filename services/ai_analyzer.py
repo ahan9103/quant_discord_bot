@@ -186,6 +186,60 @@ class AIAnalyzer:
             logger.error(f"市場報告生成失敗: {e}")
             return f"生成報告時發生錯誤: {e}"
 
+    async def generate_alpha_report(self, alpha_pool: list[dict]) -> str:
+        """
+        接收 Alpha 標的池，生成明日操作建議報告。
+        每晚 22:30 排程呼叫（此時法人 + 融資因子都已有資料）。
+        """
+        if not self.is_ready and not self.openrouter_ready:
+            return "❌ AI 模組尚未初始化。"
+
+        if not alpha_pool:
+            return "今日 Alpha 標的池為空，無法生成操作建議。"
+
+        pool_text = "\n".join([
+            f"{i+1}. [{s['code']}] {s['name']}｜"
+            f"得分 {s['score']}｜觸發因子: {'+'.join(s['factors'])}｜"
+            f"漲幅: {s['change']:+.1f}%｜量: {s['volume']:,}張｜收盤: {s['close']}"
+            for i, s in enumerate(alpha_pool)
+        ])
+
+        prompt = f"""你是一位台灣股市的量化交易員，專精多因子選股策略。
+請根據今日盤後的 Alpha 因子掃描結果，整理一份簡潔的「明日操作建議清單」。
+
+【Alpha 因子說明】
+- 量能爆發：今日成交量進入前200名且漲幅>1%（資金主動介入）
+- 資金龍頭：成交值進入前30名且收紅（機構資金高度關注）
+- 強勢動能：漲幅>3%且量>5000張（當日強勢突破）
+- 法人合買：外資買超>500張且投信同步買入（籌碼集中）
+- 融資萎縮：融資淨減少（散戶撤出，法人鎖碼訊號）
+
+【今日多因子共振標的池（score = 觸發因子數量）】
+{pool_text}
+
+【輸出要求】
+1. 直接從 `## 🎯 明日 Alpha 操作建議` 開始，不要有任何問候語或開場白。
+2. 語氣精簡專業，每支股票說明控制在 2 行以內。
+3. 依 score 高低分組說明，score 越高代表訊號越強。
+4. 最後給出整體操作策略（多頭/震盪/防守），以及 1-2 個最值得關注的族群或主題。
+
+## 🎯 明日 Alpha 操作建議
+### ⭐ 最強訊號（score ≥ 4，多因子完全共振）
+（列出並說明進場邏輯）
+
+### ✅ 次強訊號（score = 3）
+（列出並說明注意事項）
+
+### 📋 整體策略與明日重點族群
+（盤面研判 + 明日重點方向）
+"""
+
+        try:
+            return await self._generate(prompt)
+        except Exception as e:
+            logger.error(f"Alpha 報告生成失敗: {e}")
+            return f"❌ Alpha 報告生成失敗: {e}"
+
     async def analyze_news_sentiment(self, news_text: str) -> str:
         if not self.is_ready and not self.openrouter_ready:
             return "⚠️ AI 分析模組目前離線。"

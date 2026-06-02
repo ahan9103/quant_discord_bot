@@ -138,6 +138,8 @@ class QuantBot(commands.Bot):
         logger.info("✅ 已載入 Market 指令模組")
         await self.load_extension("bot.cogs.report")
         logger.info("✅ 已載入 Report 指令模組")
+        await self.load_extension("bot.cogs.alpha")
+        logger.info("✅ 已載入 Alpha 因子模組")
         # 啟動背景警報監聽任務
         self.loop.create_task(self.alert_monitor_task())
         await self.load_extension("bot.cogs.youtube_monitor")
