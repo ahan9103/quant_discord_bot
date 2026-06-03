@@ -1,8 +1,8 @@
 # database/models.py
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Float, DateTime, ForeignKey, BigInteger, Boolean, Column, Integer
+from sqlalchemy import String, Float, DateTime, Date, ForeignKey, BigInteger, Boolean, Column, Integer
 from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional
 from sqlalchemy.sql import func
 
@@ -97,6 +97,49 @@ class UserStrategy(Base):
     # 關聯設定
     user: Mapped["User"] = relationship(back_populates="strategies")
     ticker: Mapped["Ticker"] = relationship(back_populates="strategies")
+
+class AlphaScan(Base):
+    """每次 Alpha 因子掃描的快照紀錄"""
+    __tablename__ = 'alpha_scans'
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    scan_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    factors_hit: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)   # {factor: count}
+    pool_size: Mapped[int] = mapped_column(Integer, default=0)
+
+    entries: Mapped[List["AlphaPoolEntry"]] = relationship(
+        back_populates="scan", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self) -> str:
+        return f"<AlphaScan(date={self.scan_date}, pool={self.pool_size})>"
+
+
+class AlphaPoolEntry(Base):
+    """Alpha 標的池中每檔個股的歷史紀錄（供走勢估算）"""
+    __tablename__ = 'alpha_pool_entries'
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(
+        ForeignKey('alpha_scans.id', ondelete="CASCADE"), nullable=False
+    )
+    scan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+
+    code: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    score: Mapped[int] = mapped_column(Integer, nullable=False)
+    factors: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    change_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    volume: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    close_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    scan: Mapped["AlphaScan"] = relationship(back_populates="entries")
+
+    def __repr__(self) -> str:
+        return f"<AlphaPoolEntry(date={self.scan_date}, code={self.code}, score={self.score})>"
+
 
 class Channel(Base):
     __tablename__ = "monitored_channels"

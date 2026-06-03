@@ -8,7 +8,10 @@ from datetime import datetime, time, timezone, timedelta
 from sqlalchemy import select
 from database.session import AsyncSessionLocal
 from database.models import User
-from services.alpha_service import run_alpha_scan_async, ALPHA_THRESHOLD, FACTOR_CONFIG
+from services.alpha_service import (
+    run_alpha_scan_async, ALPHA_THRESHOLD, FACTOR_CONFIG,
+    save_alpha_scan_async,
+)
 from services.ai_analyzer import ai_analyzer
 
 logger = logging.getLogger("AlphaCog")
@@ -118,6 +121,12 @@ class AlphaCog(commands.Cog):
             embeds = _build_embeds(result)
             await placeholder.edit(content=None, embeds=embeds)
 
+            # 存入 DB（背景執行，不阻塞回覆）
+            try:
+                await save_alpha_scan_async(result)
+            except Exception as db_err:
+                logger.warning(f"Alpha 結果存 DB 失敗: {db_err}")
+
             if with_ai:
                 pool = result.get("alpha_pool", [])
                 ai_report = await ai_analyzer.generate_alpha_report(pool)
@@ -192,6 +201,13 @@ class AlphaCog(commands.Cog):
 
             self._last_result = result
             pool = result.get("alpha_pool", [])
+
+            # 無論有無入選標的，都存 DB（紀錄當天市況）
+            try:
+                await save_alpha_scan_async(result)
+            except Exception as db_err:
+                logger.warning(f"排程 Alpha 存 DB 失敗: {db_err}")
+
             if not pool:
                 logger.info("Alpha 排程：標的池為空，略過廣播")
                 return

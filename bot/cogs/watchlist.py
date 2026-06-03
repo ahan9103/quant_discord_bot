@@ -12,6 +12,7 @@ from database.models import Ticker, Watchlist, User
 from services.ai_analyzer import ai_analyzer
 from services.news_service import NewsService
 from data_sources.yfinance_client import fetch_stock_info, fetch_current_prices
+from services.alpha_service import get_stocks_alpha_history, estimate_stock_trend
 
 logger = logging.getLogger("watchlist")
 
@@ -271,7 +272,39 @@ class WatchlistCog(commands.Cog):
                         continue
 
                     ai_report = await ai_analyzer.analyze_news_sentiment(raw_news)
-                    report_text = f"**[持股健檢] {now.strftime('%H:%M')} 專屬情報解析**\n\n{ai_report}"
+
+                    # ── Alpha 訊號追蹤 ────────────────────────────
+                    # 將 "2330.TW" → "2330"，批量查 Alpha 歷史
+                    plain_codes = [s.split(".")[0] for s in my_watchlist]
+                    alpha_history = await get_stocks_alpha_history(plain_codes, days=30)
+
+                    alpha_lines = ["", "---", "📡 **Alpha 訊號追蹤（近30天）**"]
+                    has_alpha = False
+                    for sym, code in zip(my_watchlist, plain_codes):
+                        hist = alpha_history.get(code, [])
+                        trend = estimate_stock_trend(hist)
+                        if trend["in_pool"]:
+                            has_alpha = True
+                            factors_str = "＋".join(trend["latest_factors"])
+                            alpha_lines.append(
+                                f"• **{sym}** {trend['signal_level']}｜"
+                                f"{trend['signal_desc']}\n"
+                                f"  ↳ 最近因子: {factors_str}｜"
+                                f"收 {trend['latest_close']:.2f} ({trend['latest_change']:+.1f}%)｜"
+                                f"價格: {trend['price_trend']}｜量: {trend['vol_trend']}"
+                            )
+                        else:
+                            alpha_lines.append(f"• **{sym}** ⚪ 近期未入選 Alpha 標的池")
+
+                    if not has_alpha:
+                        alpha_lines.append("  *（自選股近期均未出現在 Alpha 標的池）*")
+
+                    alpha_section = "\n".join(alpha_lines)
+                    report_text = (
+                        f"**[持股健檢] {now.strftime('%H:%M')} 專屬情報解析**\n\n"
+                        f"{ai_report}"
+                        f"{alpha_section}"
+                    )
 
                     try:
                         user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)

@@ -250,3 +250,164 @@ def run_alpha_scan() -> dict:
 async def run_alpha_scan_async() -> dict:
     """非同步包裝"""
     return await asyncio.to_thread(run_alpha_scan)
+
+
+# ════════════════════════════════════════════════════════
+# DB 存取
+# ════════════════════════════════════════════════════════
+
+async def save_alpha_scan_async(result: dict) -> None:
+    """將掃描結果寫入 alpha_scans + alpha_pool_entries"""
+    from datetime import date as date_type
+    from database.session import AsyncSessionLocal
+    from database.models import AlphaScan, AlphaPoolEntry
+
+    pool = result.get("alpha_pool", [])
+    factors = result.get("factors", {})
+    today = date_type.today()
+
+    async with AsyncSessionLocal() as session:
+        scan = AlphaScan(
+            scan_date=today,
+            scan_time=datetime.now(),
+            factors_hit=factors,
+            pool_size=len(pool),
+        )
+        session.add(scan)
+        await session.flush()          # 取得 scan.id
+
+        for s in pool:
+            session.add(AlphaPoolEntry(
+                scan_id=scan.id,
+                scan_date=today,
+                code=s["code"],
+                name=s["name"],
+                score=s["score"],
+                factors=s["factors"],
+                change_pct=s.get("change", 0),
+                volume=s.get("volume", 0),
+                close_price=s.get("close", 0),
+                amount=s.get("amount", 0),
+            ))
+
+        await session.commit()
+    logger.info(f"✅ Alpha 掃描已存入 DB (scan_id={scan.id}, {len(pool)} 筆)")
+
+
+async def get_stocks_alpha_history(codes: list[str], days: int = 30) -> dict[str, list[dict]]:
+    """
+    批量查詢多支股票近 N 天在 Alpha 標的池的出現記錄。
+    codes: 純代號（"2330"），不含 .TW / .TWO 後綴。
+    回傳: {code: [entry_dict, ...]}，按日期降序排列。
+    """
+    from datetime import date as date_type, timedelta
+    from database.session import AsyncSessionLocal
+    from database.models import AlphaPoolEntry
+    from sqlalchemy import select, desc
+
+    if not codes:
+        return {}
+
+    since = date_type.today() - timedelta(days=days)
+
+    async with AsyncSessionLocal() as session:
+        stmt = (
+            select(AlphaPoolEntry)
+            .where(AlphaPoolEntry.code.in_(codes), AlphaPoolEntry.scan_date >= since)
+            .order_by(desc(AlphaPoolEntry.scan_date))
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+    history: dict[str, list[dict]] = {c: [] for c in codes}
+    for r in rows:
+        history[r.code].append({
+            "date":        r.scan_date.isoformat(),
+            "score":       r.score,
+            "factors":     r.factors or [],
+            "change_pct":  r.change_pct or 0.0,
+            "volume":      r.volume or 0,
+            "close_price": r.close_price or 0.0,
+        })
+    return history
+
+
+# ════════════════════════════════════════════════════════
+# 演算法：走勢估算
+# ════════════════════════════════════════════════════════
+
+def estimate_stock_trend(entries: list[dict]) -> dict:
+    """
+    純函式，從 get_stocks_alpha_history 的結果推估個股走勢。
+    entries: 按日期降序（最新在前）。
+
+    演算法：
+      1. 出現次數（persistence）→ 訊號延續性
+      2. 平均得分（avg_score）→ 因子共振強度
+      3. 收盤價線性回歸斜率 → 價格趨勢方向
+      4. 近期 vs 早期成交量比值 → 量能動向
+      5. 綜合訊號強度評級
+    """
+    if not entries:
+        return {"in_pool": False, "signal": "近期無 Alpha 訊號"}
+
+    n = len(entries)
+    avg_score = sum(e["score"] for e in entries) / n
+
+    # ── 價格趨勢（線性回歸，由舊到新）──────────────
+    closes = [e["close_price"] for e in reversed(entries)]
+    if n >= 3 and any(c > 0 for c in closes):
+        x = list(range(n))
+        mx = sum(x) / n
+        my = sum(closes) / n
+        num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, closes))
+        den = sum((xi - mx) ** 2 for xi in x)
+        slope = num / den if den else 0
+        slope_pct = (slope / my) * 100 if my else 0   # 每次出現的平均漲跌%
+
+        if slope_pct > 0.3:
+            price_trend = f"上漲 (+{slope_pct:.1f}%/次)"
+        elif slope_pct < -0.3:
+            price_trend = f"下跌 ({slope_pct:.1f}%/次)"
+        else:
+            price_trend = "盤整"
+    else:
+        price_trend = "資料不足"
+
+    # ── 量能趨勢（近3筆 vs 更早）──────────────────
+    recent_vols = [e["volume"] for e in entries[:3] if e["volume"] > 0]
+    older_vols  = [e["volume"] for e in entries[3:] if e["volume"] > 0]
+    if recent_vols and older_vols:
+        ratio = (sum(recent_vols) / len(recent_vols)) / (sum(older_vols) / len(older_vols))
+        vol_trend = "放量" if ratio > 1.2 else ("縮量" if ratio < 0.8 else "持平")
+    else:
+        vol_trend = "資料不足"
+
+    latest = entries[0]
+
+    # ── 訊號強度評級 ────────────────────────────────
+    if n >= 4 and avg_score >= 3.5:
+        signal_level = "🔴 極強"
+        signal_desc  = f"連續 {n} 次入選，均分 {avg_score:.1f}，趨勢延續機率高"
+    elif n >= 3 and avg_score >= 3:
+        signal_level = "🟠 強"
+        signal_desc  = f"近期 {n} 次共振，動能持續中"
+    elif n >= 2:
+        signal_level = "🟡 中"
+        signal_desc  = f"出現 {n} 次，觀察是否延續"
+    else:
+        signal_level = "⚪ 弱"
+        signal_desc  = "僅 1 次出現，訊號尚不穩定"
+
+    return {
+        "in_pool":       True,
+        "persistence":   n,
+        "avg_score":     round(avg_score, 1),
+        "latest_score":  latest["score"],
+        "latest_factors": latest["factors"],
+        "latest_change": latest["change_pct"],
+        "latest_close":  latest["close_price"],
+        "price_trend":   price_trend,
+        "vol_trend":     vol_trend,
+        "signal_level":  signal_level,
+        "signal_desc":   signal_desc,
+    }
